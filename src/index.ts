@@ -53,7 +53,7 @@ export type { KeyHandler, UseKeyboardOptions, NavigationHandlers } from './hooks
 export { useA11y } from './hooks/useA11y';
 export type { A11yRole, AnnounceOptions, UseA11yReturn } from './hooks/useA11y';
 
-export { useDraft, createAnswerDraft } from './hooks/useDraft';
+export { useDraft, createAnswerDraft, clearDraftByQuestionId } from './hooks/useDraft';
 export type { UseDraftOptions, UseDraftReturn } from './hooks/useDraft';
 
 export {
@@ -105,6 +105,9 @@ export type { AnalysisPanelProps } from './components/AnalysisPanel';
 
 export { ProgressPanel } from './components/ProgressPanel';
 export type { ProgressPanelProps } from './components/ProgressPanel';
+
+export { ReviewPanel } from './components/ReviewPanel';
+export type { ReviewPanelProps } from './components/ReviewPanel';
 
 export { ExerciseContainer } from './components/ExerciseContainer';
 export type { ExerciseContainerProps } from './components/ExerciseContainer';

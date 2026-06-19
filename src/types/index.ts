@@ -267,6 +267,7 @@ export interface ExerciseResult {
   totalCount: number;
   accuracy: number;
   totalTimeSpent: number;
+  wrongQuestions: Question[];
   startTime?: Date;
   endTime?: Date;
 }

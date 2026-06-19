@@ -75,6 +75,12 @@ function writeDraft(key: string, data: AnswerData | null): void {
   }
 }
 
+export function clearDraftByQuestionId(questionId: string): void {
+  if (!isLocalStorageAvailable()) return;
+  const key = `${STORAGE_PREFIX}${questionId}`;
+  localStorage.removeItem(key);
+}
+
 export function useDraft(options: UseDraftOptions): UseDraftReturn {
   const {
     questionId,

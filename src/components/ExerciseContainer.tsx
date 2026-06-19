@@ -2,9 +2,9 @@ import React, { CSSProperties, useCallback, useEffect, useMemo, useRef, useState
 import { useTheme } from '../theme/ThemeProvider';
 import { useA11y } from '../hooks/useA11y';
 import { useTimer } from '../hooks/useTimer';
-import { useDraft, createAnswerDraft } from '../hooks/useDraft';
+import { useDraft, createAnswerDraft, clearDraftByQuestionId } from '../hooks/useDraft';
 import { useExerciseKeyboard } from '../hooks/useKeyboard';
-import { createQuestionResult, isAnswerComplete } from '../utils/scoring';
+import { createQuestionResult, evaluateQuestion, isAnswerComplete } from '../utils/scoring';
 import type {
   Question,
   AnswerData,
@@ -32,6 +32,7 @@ import { Sorting } from './questions/Sorting';
 import { Listening } from './questions/Listening';
 import { AnalysisPanel } from './AnalysisPanel';
 import { ProgressPanel } from './ProgressPanel';
+import { ReviewPanel } from './ReviewPanel';
 
 export interface ExerciseContainerProps {
   question?: Question;
@@ -84,6 +85,39 @@ function initQuestionState(
     isSubmitted: !!initialResult,
     isMarked: initialIsMarked,
     isCollected: initialIsCollected,
+  };
+}
+
+function buildExerciseResult(
+  questions: Question[],
+  statesMap: Record<string, PerQuestionState>,
+  startTime: Date
+): ExerciseResult {
+  const results = questions
+    .map(q => statesMap[q.id]?.result)
+    .filter((r): r is QuestionResult => r !== null);
+
+  const totalScore = results.reduce((sum, r) => sum + r.score.total, 0);
+  const earnedScore = results.reduce((sum, r) => sum + r.score.earned, 0);
+  const correctCount = results.filter(r => r.isCorrect).length;
+  const totalTimeSpent = results.reduce((sum, r) => sum + r.timeSpent, 0);
+  const wrongQuestions = questions.filter(q => {
+    const r = statesMap[q.id]?.result;
+    return r && !r.isCorrect;
+  });
+
+  return {
+    questions,
+    results,
+    totalScore,
+    earnedScore,
+    correctCount,
+    totalCount: results.length,
+    accuracy: results.length > 0 ? Math.round((correctCount / results.length) * 100) : 0,
+    totalTimeSpent,
+    wrongQuestions,
+    startTime,
+    endTime: new Date(),
   };
 }
 
@@ -145,6 +179,8 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
   const [startTime] = useState(() => new Date());
+  const [reviewMode, setReviewMode] = useState(false);
+  const [reviewIndex, setReviewIndex] = useState(0);
   const hasStartedRef = useRef(false);
 
   const timer = useTimer({
@@ -188,6 +224,13 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     }));
   }, []);
 
+  const syncCurrentToState = useCallback(() => {
+    if (!currentQuestion || !currentState || currentState.isSubmitted) return;
+    if (draft !== null) {
+      updateState(currentQuestion.id, { answer: draft });
+    }
+  }, [currentQuestion, currentState, draft, updateState]);
+
   const progress = useMemo<ExerciseProgress>(() => {
     let answeredCount = 0;
     let submittedCount = 0;
@@ -210,20 +253,28 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
         };
       }
 
-      const isAnswered = isAnswerComplete(q, state.answer);
-      const isCorrect = state.result?.isCorrect ?? false;
+      const effectiveAnswer = state.isSubmitted ? state.answer : (state.answer ?? createAnswerDraft(q));
+      const isAnswered = isAnswerComplete(q, effectiveAnswer);
+
+      if (state.isSubmitted) {
+        submittedCount++;
+        if (state.result?.isCorrect) {
+          correctCount++;
+        } else {
+          wrongCount++;
+        }
+        earnedScore += state.result?.score.earned ?? 0;
+      } else if (isAnswered) {
+        const preview = evaluateQuestion(q, effectiveAnswer, scoringMode);
+        earnedScore += preview.earned;
+      }
 
       if (isAnswered) answeredCount++;
-      if (state.isSubmitted) submittedCount++;
-      if (state.isSubmitted && isCorrect) correctCount++;
-      if (state.isSubmitted && !isCorrect) wrongCount++;
-
       totalScore += q.score ?? 1;
-      earnedScore += state.result?.score.earned ?? 0;
 
       let status: 'unanswered' | 'answered' | 'submitted' | 'wrong' = 'unanswered';
       if (state.isSubmitted) {
-        status = isCorrect ? 'submitted' : 'wrong';
+        status = state.result?.isCorrect ? 'submitted' : 'wrong';
       } else if (isAnswered) {
         status = 'answered';
       }
@@ -234,7 +285,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
         status,
         isMarked: state.isMarked,
         isCollected: state.isCollected,
-        score: state.result?.score.earned,
+        score: state.isSubmitted ? (state.result?.score.earned ?? 0) : (isAnswered ? evaluateQuestion(q, effectiveAnswer, scoringMode).earned : 0),
       };
     });
 
@@ -245,13 +296,15 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       correctCount,
       wrongCount,
       totalScore,
-      earnedScore,
+      earnedScore: Number(earnedScore.toFixed(2)),
       items,
     };
-  }, [questions, statesMap]);
+  }, [questions, statesMap, scoringMode]);
 
   const jumpTo = useCallback((index: number) => {
     if (!questions[index] || index === currentIndex) return;
+
+    syncCurrentToState();
 
     if (controlledIndex === undefined) {
       setInternalIndex(index);
@@ -260,7 +313,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     const nextQuestion = questions[index];
     callbacks.onQuestionChange?.(index, nextQuestion, progress);
     announceInfo(`切换到第 ${index + 1} 题`);
-  }, [questions, currentIndex, controlledIndex, progress, callbacks, announceInfo]);
+  }, [questions, currentIndex, controlledIndex, progress, callbacks, announceInfo, syncCurrentToState]);
 
   const handleNext = useCallback(() => {
     const nextIndex = currentIndex + 1;
@@ -290,6 +343,19 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     jumpTo(prevIndex);
   }, [currentIndex, questions, jumpTo, callbacks, announceInfo]);
 
+  const fireCompleteIfNeeded = useCallback((newStates: Record<string, PerQuestionState>) => {
+    const allDone = questions.every(q => newStates[q.id]?.isSubmitted);
+    if (!allDone) return;
+
+    const exerciseResult = buildExerciseResult(questions, newStates, startTime);
+    callbacks.onExerciseComplete?.(exerciseResult);
+
+    if (isSetMode) {
+      setReviewMode(true);
+      setReviewIndex(0);
+    }
+  }, [questions, startTime, callbacks, isSetMode]);
+
   const submitCurrent = useCallback((fromTimeout = false) => {
     if (!currentQuestion || !currentState || currentState.isSubmitted || isSubmitting) return;
 
@@ -313,12 +379,24 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     );
 
     setTimeout(() => {
-      updateState(currentQuestion.id, {
+      const newPatch: Partial<PerQuestionState> = {
         answer: currentAnswer,
         result: questionResult,
         isSubmitted: true,
+      };
+
+      setStatesMap(prev => {
+        const next = {
+          ...prev,
+          [currentQuestion.id]: { ...prev[currentQuestion.id], ...newPatch },
+        };
+
+        setTimeout(() => fireCompleteIfNeeded(next), 0);
+        return next;
       });
+
       clearDraft();
+      clearDraftByQuestionId(currentQuestion.id);
       setIsSubmitting(false);
 
       if (questionResult.isCorrect) {
@@ -338,18 +416,19 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     canSubmitIncomplete,
     timer,
     scoringMode,
-    updateState,
     clearDraft,
     callbacks,
     announceSuccess,
     announceError,
+    fireCompleteIfNeeded,
   ]);
 
   const submitAll = useCallback(() => {
     if (isSubmittingAll) return;
 
+    syncCurrentToState();
+
     const unanswered: Question[] = [];
-    const unsubmitted: { question: Question; answer: AnswerData; time: number }[] = [];
 
     questions.forEach(q => {
       const state = statesMap[q.id];
@@ -358,7 +437,6 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       if (!canSubmitAllIncomplete && !isAnswerComplete(q, state.answer)) {
         unanswered.push(q);
       }
-      unsubmitted.push({ question: q, answer: state.answer, time: 0 });
     });
 
     if (!canSubmitAllIncomplete && unanswered.length > 0) {
@@ -370,7 +448,6 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
 
     setTimeout(() => {
       const newStatesMap = { ...statesMap };
-      const results: QuestionResult[] = [];
 
       questions.forEach(q => {
         const state = newStatesMap[q.id];
@@ -390,47 +467,33 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
           result,
           isSubmitted: true,
         };
-        results.push(result);
+
+        clearDraftByQuestionId(q.id);
       });
 
       setStatesMap(newStatesMap);
 
-      const allResults = questions
-        .map(q => newStatesMap[q.id]?.result)
-        .filter((r): r is QuestionResult => r !== null);
+      const exerciseResult = buildExerciseResult(questions, newStatesMap, startTime);
 
-      const totalTimeSpent = allResults.reduce((sum, r) => sum + r.timeSpent, 0);
-      const totalScore = allResults.reduce((sum, r) => sum + r.score.total, 0);
-      const earnedScore = allResults.reduce((sum, r) => sum + r.score.earned, 0);
-      const correctCount = allResults.filter(r => r.isCorrect).length;
+      if (currentQuestion && !statesMap[currentQuestion.id]?.isSubmitted) {
+        clearDraft();
+      }
 
-      const exerciseResult: ExerciseResult = {
-        questions,
-        results: allResults,
-        totalScore,
-        earnedScore,
-        correctCount,
-        totalCount: allResults.length,
-        accuracy: allResults.length > 0 ? Math.round((correctCount / allResults.length) * 100) : 0,
-        totalTimeSpent,
-        startTime,
-        endTime: new Date(),
-      };
-
-      clearDraft();
       setIsSubmittingAll(false);
-      announceInfo(`整组提交完成，共 ${allResults.length} 题，正确 ${correctCount} 题`);
+      announceInfo(`整组提交完成，共 ${exerciseResult.totalCount} 题，正确 ${exerciseResult.correctCount} 题`);
 
       callbacks.onExerciseSubmit?.(exerciseResult);
+      callbacks.onExerciseComplete?.(exerciseResult);
 
-      const allSubmitted = questions.every(q => newStatesMap[q.id]?.isSubmitted);
-      if (allSubmitted) {
-        callbacks.onExerciseComplete?.(exerciseResult);
+      if (isSetMode) {
+        setReviewMode(true);
+        setReviewIndex(0);
       }
     }, 500);
   }, [
     questions,
     statesMap,
+    currentQuestion,
     isSubmittingAll,
     canSubmitAllIncomplete,
     scoringMode,
@@ -439,6 +502,8 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     callbacks,
     announceInfo,
     announceError,
+    syncCurrentToState,
+    isSetMode,
   ]);
 
   const handleRedo = useCallback(() => {
@@ -456,6 +521,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       isSubmitted: false,
     });
     setDraft(freshAnswer);
+    setReviewMode(false);
     timer.reset();
     if (autoStartTimer) {
       timer.start();
@@ -484,21 +550,60 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     callbacks.onAnswerChange?.(currentQuestion, newAnswer);
   }, [currentQuestion, currentState?.isSubmitted, setDraft, callbacks]);
 
+  const handleReviewJump = useCallback((index: number) => {
+    if (index < 0 || index >= questions.length) return;
+    setReviewIndex(index);
+  }, [questions.length]);
+
+  const handleReviewRedo = useCallback((index: number) => {
+    setReviewMode(false);
+    if (controlledIndex === undefined) {
+      setInternalIndex(index);
+    }
+    const q = questions[index];
+    if (!q) return;
+
+    const freshAnswer = createAnswerDraft(q);
+    updateState(q.id, {
+      answer: freshAnswer,
+      result: null,
+      isSubmitted: false,
+    });
+
+    setTimeout(() => {
+      setDraft(freshAnswer);
+      timer.reset();
+      if (autoStartTimer) {
+        timer.start();
+      }
+    }, 50);
+  }, [questions, controlledIndex, updateState, setDraft, timer, autoStartTimer]);
+
   useExerciseKeyboard({
     onSubmit: () => {
+      if (reviewMode) return;
       if (currentState && !currentState.isSubmitted) {
         submitCurrent(false);
       }
     },
     onRedo: () => {
+      if (reviewMode) return;
       if (showRedo && currentState?.isSubmitted) {
         handleRedo();
       }
     },
     onNext: () => {
+      if (reviewMode) {
+        handleReviewJump(reviewIndex + 1);
+        return;
+      }
       if (showNavButtons) handleNext();
     },
     onPrev: () => {
+      if (reviewMode) {
+        handleReviewJump(reviewIndex - 1);
+        return;
+      }
       if (showNavButtons) handlePrev();
     },
   });
@@ -511,12 +616,12 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   }, [questions, callbacks]);
 
   useEffect(() => {
-    if (!currentQuestion) return;
+    if (!currentQuestion || reviewMode) return;
     timer.reset();
     if (autoStartTimer && !currentState?.isSubmitted) {
       timer.start();
     }
-  }, [currentIndex]);
+  }, [currentIndex, reviewMode]);
 
   const answerComplete = useMemo(() => {
     if (!currentQuestion || !answer) return false;
@@ -712,149 +817,172 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       )}
 
       <div style={mainContentStyle}>
-        <div style={headerStyle}>
-          <div style={headerLeftStyle}>
-            {showTimer && (
-              <TimerDisplay
-                time={timer.time}
-                formattedTime={timer.formattedTime}
-                remainingTime={timer.remainingTime}
-                formattedRemainingTime={timer.formattedRemainingTime}
-                progress={timer.progress}
-                isRunning={timer.isRunning && !timer.isPaused}
-                size="md"
-              />
-            )}
-          </div>
-
-          <div style={headerRightStyle}>
-            {showCollect && (
-              <CollectButton
-                isActive={currentState?.isCollected ?? false}
-                onClick={handleCollect}
-                ariaLabel={currentState?.isCollected ? '取消收藏' : '收藏题目'}
-              />
-            )}
-            {showMark && (
-              <MarkButton
-                isActive={currentState?.isMarked ?? false}
-                onClick={handleMark}
-                ariaLabel={currentState?.isMarked ? '取消标记' : '标记题目'}
-              />
-            )}
-            {showRedo && currentState?.isSubmitted && (
-              <RedoButton onClick={handleRedo} ariaLabel="重做本题" />
-            )}
-          </div>
-        </div>
-
-        <div className={bodyClassName} style={bodyContainerStyle}>
-          <QuestionHeader
-            question={currentQuestion}
-            index={currentIndex}
-            total={questions.length}
+        {reviewMode && isSetMode ? (
+          <ReviewPanel
+            questions={questions}
+            statesMap={statesMap}
+            currentIndex={reviewIndex}
+            onJump={handleReviewJump}
+            onRedo={handleReviewRedo}
+            onExitReview={() => setReviewMode(false)}
+            scoringMode={scoringMode}
           />
+        ) : (
+          <>
+            <div style={headerStyle}>
+              <div style={headerLeftStyle}>
+                {showTimer && (
+                  <TimerDisplay
+                    time={timer.time}
+                    formattedTime={timer.formattedTime}
+                    remainingTime={timer.remainingTime}
+                    formattedRemainingTime={timer.formattedRemainingTime}
+                    progress={timer.progress}
+                    isRunning={timer.isRunning && !timer.isPaused}
+                    size="md"
+                  />
+                )}
+              </div>
 
-          {renderQuestionComponent()}
+              <div style={headerRightStyle}>
+                {showCollect && (
+                  <CollectButton
+                    isActive={currentState?.isCollected ?? false}
+                    onClick={handleCollect}
+                    ariaLabel={currentState?.isCollected ? '取消收藏' : '收藏题目'}
+                  />
+                )}
+                {showMark && (
+                  <MarkButton
+                    isActive={currentState?.isMarked ?? false}
+                    onClick={handleMark}
+                    ariaLabel={currentState?.isMarked ? '取消标记' : '标记题目'}
+                  />
+                )}
+                {showRedo && currentState?.isSubmitted && (
+                  <RedoButton onClick={handleRedo} ariaLabel="重做本题" />
+                )}
+                {isSetMode && allSubmitted && !reviewMode && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => { setReviewMode(true); setReviewIndex(currentIndex); }}
+                  >
+                    查看复盘
+                  </Button>
+                )}
+              </div>
+            </div>
 
-          {currentState?.isSubmitted && showAnalysis && currentState.result && (
-            <AnalysisPanel
-              question={currentQuestion}
-              result={currentState.result}
-              onRedo={showRedo ? handleRedo : undefined}
-            />
-          )}
-        </div>
+            <div className={bodyClassName} style={bodyContainerStyle}>
+              <QuestionHeader
+                question={currentQuestion}
+                index={currentIndex}
+                total={questions.length}
+              />
 
-        <div style={footerStyle}>
-          <div style={footerLeftStyle}>
-            {!currentState?.isSubmitted && (
-              <span style={draftStatusStyle}>
-                {isSaving ? (
-                  <>
-                    <span style={{
-                      display: 'inline-block',
-                      width: '12px',
-                      height: '12px',
-                      border: `2px solid ${theme.colors.primary}`,
-                      borderTopColor: 'transparent',
-                      borderRadius: theme.borderRadius.full,
-                      animation: 'edu-spin 0.8s linear infinite',
-                    }} />
-                    草稿保存中...
-                  </>
-                ) : hasDraft && lastSaved ? (
-                  <>
-                    <span style={{ color: theme.colors.success }}>✓</span>
-                    草稿已保存（{lastSaved.toLocaleTimeString()}）
-                  </>
-                ) : (
-                  <span style={{ color: theme.colors.disabledText }}>
-                    未保存草稿
+              {renderQuestionComponent()}
+
+              {currentState?.isSubmitted && showAnalysis && currentState.result && (
+                <AnalysisPanel
+                  question={currentQuestion}
+                  result={currentState.result}
+                  onRedo={showRedo ? handleRedo : undefined}
+                />
+              )}
+            </div>
+
+            <div style={footerStyle}>
+              <div style={footerLeftStyle}>
+                {!currentState?.isSubmitted && (
+                  <span style={draftStatusStyle}>
+                    {isSaving ? (
+                      <>
+                        <span style={{
+                          display: 'inline-block',
+                          width: '12px',
+                          height: '12px',
+                          border: `2px solid ${theme.colors.primary}`,
+                          borderTopColor: 'transparent',
+                          borderRadius: theme.borderRadius.full,
+                          animation: 'edu-spin 0.8s linear infinite',
+                        }} />
+                        草稿保存中...
+                      </>
+                    ) : hasDraft && lastSaved ? (
+                      <>
+                        <span style={{ color: theme.colors.success }}>✓</span>
+                        草稿已保存（{lastSaved.toLocaleTimeString()}）
+                      </>
+                    ) : (
+                      <span style={{ color: theme.colors.disabledText }}>
+                        未保存草稿
+                      </span>
+                    )}
                   </span>
                 )}
-              </span>
-            )}
 
-            {!currentState?.isSubmitted && !answerComplete && !canSubmitIncomplete && (
-              <span style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: theme.spacing.xs,
-                fontSize: theme.fontSize.sm,
-                color: theme.colors.warning,
-              }}>
-                ⚠ 请完成所有作答
-              </span>
-            )}
-          </div>
+                {!currentState?.isSubmitted && !answerComplete && !canSubmitIncomplete && (
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: theme.spacing.xs,
+                    fontSize: theme.fontSize.sm,
+                    color: theme.colors.warning,
+                  }}>
+                    ⚠ 请完成所有作答
+                  </span>
+                )}
+              </div>
 
-          <div style={footerRightStyle}>
-            {showNavButtons && (
-              <NavButton
-                direction="prev"
-                onClick={handlePrev}
-                disabled={currentIndex === 0}
-              />
-            )}
+              <div style={footerRightStyle}>
+                {showNavButtons && (
+                  <NavButton
+                    direction="prev"
+                    onClick={handlePrev}
+                    disabled={currentIndex === 0}
+                  />
+                )}
 
-            {!currentState?.isSubmitted ? (
-              <Button
-                variant="primary"
-                onClick={() => submitCurrent(false)}
-                disabled={(!canSubmitIncomplete && !answerComplete) || isSubmitting}
-                loading={isSubmitting}
-                size="lg"
-                icon={<span>✓</span>}
-                ariaLabel="提交答案"
-              >
-                提交本题
-              </Button>
-            ) : (
-              showNavButtons && (
-                <NavButton
-                  direction="next"
-                  onClick={handleNext}
-                  disabled={currentIndex >= questions.length - 1}
-                />
-              )
-            )}
+                {!currentState?.isSubmitted ? (
+                  <Button
+                    variant="primary"
+                    onClick={() => submitCurrent(false)}
+                    disabled={(!canSubmitIncomplete && !answerComplete) || isSubmitting}
+                    loading={isSubmitting}
+                    size="lg"
+                    icon={<span>✓</span>}
+                    ariaLabel="提交答案"
+                  >
+                    提交本题
+                  </Button>
+                ) : (
+                  showNavButtons && (
+                    <NavButton
+                      direction="next"
+                      onClick={handleNext}
+                      disabled={currentIndex >= questions.length - 1}
+                    />
+                  )
+                )}
 
-            {isSetMode && showSubmitAll && !allSubmitted && (
-              <Button
-                variant="secondary"
-                onClick={submitAll}
-                loading={isSubmittingAll}
-                disabled={isSubmittingAll}
-                size="lg"
-                icon={<span>📋</span>}
-                ariaLabel="整组提交"
-              >
-                整组提交
-              </Button>
-            )}
-          </div>
-        </div>
+                {isSetMode && showSubmitAll && !allSubmitted && (
+                  <Button
+                    variant="secondary"
+                    onClick={submitAll}
+                    loading={isSubmittingAll}
+                    disabled={isSubmittingAll}
+                    size="lg"
+                    icon={<span>📋</span>}
+                    ariaLabel="整组提交"
+                  >
+                    整组提交
+                  </Button>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {shouldShowProgress && progressPosition === 'right' && (
