@@ -1,12 +1,14 @@
-import React, { CSSProperties, useMemo } from 'react';
+import React, { CSSProperties, useCallback, useMemo, useState } from 'react';
 import { useTheme } from '../theme/ThemeProvider';
 import { useA11y } from '../hooks/useA11y';
 import { evaluateQuestion } from '../utils/scoring';
 import type {
   Question,
+  QuestionType,
   QuestionResult,
   AnswerData,
   ScoringMode,
+  ReviewFilters,
 } from '../types';
 import { Button } from './common/Button';
 import { NavButton } from './common/ActionButtons';
@@ -17,6 +19,7 @@ interface PerQuestionState {
   isSubmitted: boolean;
   isMarked: boolean;
   isCollected: boolean;
+  elapsedTime?: number;
 }
 
 export interface ReviewPanelProps {
@@ -26,6 +29,8 @@ export interface ReviewPanelProps {
   onJump: (index: number) => void;
   onRedo: (index: number) => void;
   onExitReview: () => void;
+  onStartCorrection?: () => void;
+  onFilterChange?: (filters: ReviewFilters, filteredCount: number) => void;
   scoringMode?: ScoringMode;
   className?: string;
   style?: CSSProperties;
@@ -39,6 +44,8 @@ const typeLabels: Record<string, string> = {
   'listening': '听力题',
 };
 
+const ALL_TYPES: QuestionType[] = ['multiple-choice', 'fill-blank', 'matching', 'sorting', 'listening'];
+
 export const ReviewPanel: React.FC<ReviewPanelProps> = ({
   questions,
   statesMap,
@@ -46,12 +53,140 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
   onJump,
   onRedo,
   onExitReview,
+  onStartCorrection,
+  onFilterChange,
   scoringMode = 'strict',
   className,
   style,
 }) => {
   const { theme } = useTheme();
   const { announce } = useA11y();
+
+  const [filters, setFilters] = useState<ReviewFilters>({
+    questionTypes: undefined,
+    correctness: 'all',
+    markedOnly: false,
+  });
+  const [lastNonFilteredIndex, setLastNonFilteredIndex] = useState<number>(currentIndex);
+  const [showFilterBar, setShowFilterBar] = useState(false);
+
+  const isFilterActive = useMemo(() => {
+    return (
+      (filters.questionTypes && filters.questionTypes.length > 0) ||
+      filters.correctness !== 'all' ||
+      filters.markedOnly === true
+    );
+  }, [filters]);
+
+  const filteredItems = useMemo(() => {
+    return questions
+      .map((q, i) => ({ q, i, s: statesMap[q.id] }))
+      .filter(({ q, s }) => {
+        if (filters.questionTypes && filters.questionTypes.length > 0) {
+          if (!filters.questionTypes.includes(q.type)) return false;
+        }
+        if (filters.correctness === 'correct') {
+          if (!s?.result?.isCorrect) return false;
+        } else if (filters.correctness === 'wrong') {
+          if (s?.result?.isCorrect !== false) return false;
+        }
+        if (filters.markedOnly) {
+          if (!s?.isMarked) return false;
+        }
+        return true;
+      });
+  }, [questions, statesMap, filters]);
+
+  const handleJump = useCallback(
+    (target: number) => {
+      if (!isFilterActive) {
+        onJump(target);
+        return;
+      }
+      const entry = filteredItems[target];
+      if (entry) {
+        onJump(entry.i);
+      }
+    },
+    [isFilterActive, filteredItems, onJump]
+  );
+
+  const effectiveIndexInFiltered = useMemo(() => {
+    if (!isFilterActive) return currentIndex;
+    return filteredItems.findIndex(e => e.i === currentIndex);
+  }, [isFilterActive, filteredItems, currentIndex]);
+
+  const effectiveTotal = isFilterActive ? filteredItems.length : questions.length;
+
+  const handlePrev = useCallback(() => {
+    if (isFilterActive) {
+      if (effectiveIndexInFiltered > 0) handleJump(effectiveIndexInFiltered - 1);
+    } else {
+      if (currentIndex > 0) onJump(currentIndex - 1);
+    }
+  }, [isFilterActive, effectiveIndexInFiltered, currentIndex, handleJump, onJump]);
+
+  const handleNext = useCallback(() => {
+    if (isFilterActive) {
+      if (effectiveIndexInFiltered < effectiveTotal - 1) handleJump(effectiveIndexInFiltered + 1);
+    } else {
+      if (currentIndex < questions.length - 1) onJump(currentIndex + 1);
+    }
+  }, [isFilterActive, effectiveIndexInFiltered, effectiveTotal, currentIndex, questions.length, handleJump, onJump]);
+
+  const handleRedo = () => {
+    if (isFilterActive) {
+      setLastNonFilteredIndex(currentIndex);
+    }
+    onRedo(currentIndex);
+  };
+
+  const updateFilters = useCallback(
+    (next: ReviewFilters) => {
+      const hasActive =
+        (next.questionTypes && next.questionTypes.length > 0) ||
+        next.correctness !== 'all' ||
+        next.markedOnly === true;
+
+      if (hasActive && !isFilterActive) {
+        setLastNonFilteredIndex(currentIndex);
+      }
+
+      setFilters(next);
+
+      const count = questions
+        .map((q, i) => ({ q, i, s: statesMap[q.id] }))
+        .filter(({ q, s }) => {
+          if (next.questionTypes && next.questionTypes.length > 0) {
+            if (!next.questionTypes.includes(q.type)) return false;
+          }
+          if (next.correctness === 'correct') {
+            if (!s?.result?.isCorrect) return false;
+          } else if (next.correctness === 'wrong') {
+            if (s?.result?.isCorrect !== false) return false;
+          }
+          if (next.markedOnly) {
+            if (!s?.isMarked) return false;
+          }
+          return true;
+        }).length;
+
+      onFilterChange?.(next, count);
+    },
+    [questions, statesMap, isFilterActive, currentIndex, onFilterChange]
+  );
+
+  const clearFilters = useCallback(() => {
+    updateFilters({ questionTypes: undefined, correctness: 'all', markedOnly: false });
+    setShowFilterBar(false);
+    onJump(lastNonFilteredIndex);
+  }, [updateFilters, lastNonFilteredIndex, onJump]);
+
+  const toggleType = (t: QuestionType) => {
+    const current = filters.questionTypes ?? [];
+    const next = current.includes(t) ? current.filter(x => x !== t) : [...current, t];
+    updateFilters({ ...filters, questionTypes: next.length > 0 ? next : undefined });
+  };
 
   const question = questions[currentIndex];
   const state = question ? statesMap[question.id] : null;
@@ -80,26 +215,42 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
     return { totalScore, earnedScore, correctCount, wrongCount, wrongList };
   }, [questions, statesMap]);
 
-  const handleRedo = () => {
-    if (!result?.isCorrect) {
-      announce(`重做第 ${currentIndex + 1} 题`);
-    }
-    onRedo(currentIndex);
-  };
-
-  const handlePrev = () => {
-    if (currentIndex > 0) onJump(currentIndex - 1);
-  };
-
-  const handleNext = () => {
-    if (currentIndex < questions.length - 1) onJump(currentIndex + 1);
-  };
-
   if (!question || !result) {
     return null;
   }
 
   const isWrong = !result.isCorrect;
+  const previewScore = evaluateQuestion(question, state?.answer ?? { selected: [] } as AnswerData, scoringMode);
+
+  const chipStyle = (active: boolean): CSSProperties => ({
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: `${theme.spacing.xs} ${theme.spacing.sm}`,
+    borderRadius: theme.borderRadius.full,
+    border: `1px solid ${active ? theme.colors.primary : theme.colors.border}`,
+    backgroundColor: active ? `${theme.colors.primary}15` : 'transparent',
+    color: active ? theme.colors.primary : theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
+    cursor: 'pointer',
+    userSelect: 'none',
+    transition: `all ${theme.transitions.fast}`,
+  });
+
+  const filterBarStyle: CSSProperties = {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+    padding: `${theme.spacing.md} ${theme.spacing.lg}`,
+    backgroundColor: theme.colors.surface,
+    borderBottom: `1px solid ${theme.colors.border}`,
+  };
+
+  const filterGroupStyle: CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    flexWrap: 'wrap',
+  };
 
   const containerStyle: CSSProperties = {
     display: 'flex',
@@ -230,7 +381,7 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
     whiteSpace: 'pre-wrap',
   };
 
-  const wrongListStyle: CSSProperties = {
+  const gridListStyle: CSSProperties = {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(44px, 1fr))',
     gap: theme.spacing.sm,
@@ -240,22 +391,29 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
     borderRadius: theme.borderRadius.md,
   };
 
-  const wrongItemBtnStyle = (isCurrent: boolean, isWrongItem: boolean): CSSProperties => ({
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: '40px',
-    minHeight: '40px',
-    border: `2px solid ${isWrongItem ? theme.colors.error : theme.colors.success}`,
-    backgroundColor: isCurrent ? `${theme.colors.primary}20` : isWrongItem ? `${theme.colors.error}10` : `${theme.colors.success}10`,
-    color: isCurrent ? theme.colors.primary : isWrongItem ? theme.colors.error : theme.colors.success,
-    borderRadius: theme.borderRadius.md,
-    fontSize: theme.fontSize.sm,
-    fontWeight: isCurrent ? theme.fontWeights.bold : theme.fontWeights.medium,
-    cursor: 'pointer',
-    transition: `all ${theme.transitions.fast}`,
-    touchAction: 'manipulation',
-  });
+  const itemBtnStyle = (isCurrent: boolean, status: 'wrong' | 'correct' | 'unsubmitted'): CSSProperties => {
+    const colors = {
+      wrong: theme.colors.error,
+      correct: theme.colors.success,
+      unsubmitted: theme.colors.textSecondary,
+    };
+    return {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      minWidth: '40px',
+      minHeight: '40px',
+      border: `2px solid ${colors[status]}`,
+      backgroundColor: isCurrent ? `${theme.colors.primary}20` : `${colors[status]}10`,
+      color: isCurrent ? theme.colors.primary : colors[status],
+      borderRadius: theme.borderRadius.md,
+      fontSize: theme.fontSize.sm,
+      fontWeight: isCurrent ? theme.fontWeights.bold : theme.fontWeights.medium,
+      cursor: 'pointer',
+      transition: `all ${theme.transitions.fast}`,
+      touchAction: 'manipulation',
+    };
+  };
 
   const footerStyle: CSSProperties = {
     display: 'flex',
@@ -268,14 +426,26 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
     borderTop: `1px solid ${theme.colors.border}`,
   };
 
-  const previewScore = evaluateQuestion(question, state?.answer ?? { selected: [] } as AnswerData, scoringMode);
-
   return (
     <div className={className} style={containerStyle}>
       <div style={summaryBarStyle}>
         <div>
-          <div style={{ fontSize: theme.fontSize.lg, fontWeight: theme.fontWeights.bold, color: theme.colors.text }}>
-            题组复盘
+          <div style={{ display: 'flex', alignItems: 'center', gap: theme.spacing.sm }}>
+            <div style={{ fontSize: theme.fontSize.lg, fontWeight: theme.fontWeights.bold, color: theme.colors.text }}>
+              题组复盘
+            </div>
+            {isFilterActive && (
+              <span style={{
+                display: 'inline-block',
+                padding: `2px ${theme.spacing.sm}`,
+                backgroundColor: `${theme.colors.primary}15`,
+                color: theme.colors.primary,
+                borderRadius: theme.borderRadius.full,
+                fontSize: theme.fontSize.xs,
+              }}>
+                筛选中 · {effectiveTotal} 题
+              </span>
+            )}
           </div>
           <div style={scoreBarStyle}>
             <div style={scoreFillStyle} />
@@ -299,12 +469,106 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
         </div>
       </div>
 
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: theme.spacing.sm,
+        padding: `${theme.spacing.sm} ${theme.spacing.lg}`,
+        backgroundColor: theme.colors.background,
+        borderBottom: `1px solid ${theme.colors.border}`,
+      }}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setShowFilterBar(v => !v)}
+          icon={<span>⚙</span>}
+        >
+          {showFilterBar ? '收起筛选' : '展开筛选'}
+        </Button>
+        {summary.wrongList.length > 0 && onStartCorrection && (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              announce(`开始错题重练，共 ${summary.wrongList.length} 题`);
+              onStartCorrection();
+            }}
+            icon={<span>✎</span>}
+          >
+            错题重练（{summary.wrongList.length} 题）
+          </Button>
+        )}
+        {isFilterActive && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={clearFilters}
+          >
+            清除筛选
+          </Button>
+        )}
+      </div>
+
+      {showFilterBar && (
+        <div style={filterBarStyle}>
+          <div style={filterGroupStyle}>
+            <span style={{ fontSize: theme.fontSize.xs, color: theme.colors.textSecondary, marginRight: theme.spacing.xs }}>题型：</span>
+            {ALL_TYPES.map(t => {
+              const active = filters.questionTypes?.includes(t) ?? false;
+              return (
+                <span
+                  key={t}
+                  style={chipStyle(active)}
+                  onClick={() => toggleType(t)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') toggleType(t); }}
+                >
+                  {typeLabels[t]}
+                </span>
+              );
+            })}
+          </div>
+
+          <div style={filterGroupStyle}>
+            <span style={{ fontSize: theme.fontSize.xs, color: theme.colors.textSecondary, marginRight: theme.spacing.xs }}>对错：</span>
+            {(['all', 'correct', 'wrong'] as const).map(v => (
+              <span
+                key={v}
+                style={chipStyle(filters.correctness === v)}
+                onClick={() => updateFilters({ ...filters, correctness: v })}
+                role="button"
+                tabIndex={0}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') updateFilters({ ...filters, correctness: v }); }}
+              >
+                {v === 'all' ? '全部' : v === 'correct' ? '答对' : '答错'}
+              </span>
+            ))}
+          </div>
+
+          <div style={filterGroupStyle}>
+            <span
+              style={chipStyle(filters.markedOnly ?? false)}
+              onClick={() => updateFilters({ ...filters, markedOnly: !(filters.markedOnly ?? false) })}
+              role="button"
+              tabIndex={0}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') updateFilters({ ...filters, markedOnly: !(filters.markedOnly ?? false) }); }}
+            >
+              {filters.markedOnly ? '☑ 只看标记' : '☐ 只看标记'}
+            </span>
+          </div>
+        </div>
+      )}
+
       <div style={bodyStyle}>
         <div style={questionCardStyle}>
           <div style={cardHeaderStyle}>
             <div style={cardHeaderLeftStyle}>
               <span>{isWrong ? '✗' : '✓'}</span>
               <span>第 {currentIndex + 1} 题 · {typeLabels[question.type] || question.type}</span>
+              {state?.isMarked && (
+                <span style={{ fontSize: theme.fontSize.xs, color: theme.colors.warning }}>★ 已标记</span>
+              )}
               {question.difficulty && (
                 <span style={{ fontSize: theme.fontSize.xs, color: theme.colors.warning }}>
                   {'★'.repeat(question.difficulty)}{'☆'.repeat(5 - question.difficulty)}
@@ -383,31 +647,37 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
           </div>
         </div>
 
-        {summary.wrongList.length > 0 && (
-          <div>
-            <div style={{ fontSize: theme.fontSize.sm, fontWeight: theme.fontWeights.semibold, color: theme.colors.error, marginBottom: theme.spacing.xs }}>
-              错题速览（点击跳转）
-            </div>
-            <div style={wrongListStyle}>
-              {questions.map((q, i) => {
-                const s = statesMap[q.id];
-                const isWrongItem = s?.result ? !s.result.isCorrect : false;
-                const isCurrent = i === currentIndex;
-                return (
-                  <button
-                    key={q.id}
-                    type="button"
-                    style={wrongItemBtnStyle(isCurrent, isWrongItem)}
-                    onClick={() => onJump(i)}
-                    aria-label={`第 ${i + 1} 题，${isWrongItem ? '答错' : '答对'}${isCurrent ? '，当前' : ''}`}
-                  >
-                    {i + 1}
-                  </button>
-                );
-              })}
-            </div>
+        <div>
+          <div style={{ fontSize: theme.fontSize.sm, fontWeight: theme.fontWeights.semibold, color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>
+            {isFilterActive ? `筛选结果（共 ${effectiveTotal} 题，点击跳转）` : '题号速览（点击跳转）'}
           </div>
-        )}
+          <div style={gridListStyle}>
+            {(isFilterActive ? filteredItems : questions.map((q, i) => ({ q, i, s: statesMap[q.id] }))).map((entry, fIdx) => {
+              const { q, i, s } = entry;
+              const isCurrent = i === currentIndex;
+              let status: 'wrong' | 'correct' | 'unsubmitted' = 'unsubmitted';
+              if (s?.result?.isCorrect) status = 'correct';
+              else if (s?.result?.isCorrect === false) status = 'wrong';
+              return (
+                <button
+                  key={q.id}
+                  type="button"
+                  style={itemBtnStyle(isCurrent, status)}
+                  onClick={() => {
+                    if (isFilterActive) {
+                      handleJump(fIdx);
+                    } else {
+                      onJump(i);
+                    }
+                  }}
+                  aria-label={`第 ${i + 1} 题，${typeLabels[q.type] || q.type}${isCurrent ? '，当前' : ''}`}
+                >
+                  {i + 1}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       <div style={footerStyle}>
@@ -423,15 +693,15 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
           <NavButton
             direction="prev"
             onClick={handlePrev}
-            disabled={currentIndex === 0}
+            disabled={isFilterActive ? effectiveIndexInFiltered <= 0 : currentIndex === 0}
           />
           <span style={{ fontSize: theme.fontSize.sm, color: theme.colors.textSecondary, minWidth: '60px', textAlign: 'center' }}>
-            {currentIndex + 1} / {questions.length}
+            {isFilterActive ? `${effectiveIndexInFiltered < 0 ? '-' : effectiveIndexInFiltered + 1} / ${effectiveTotal} (筛选)` : `${currentIndex + 1} / ${questions.length}`}
           </span>
           <NavButton
             direction="next"
             onClick={handleNext}
-            disabled={currentIndex >= questions.length - 1}
+            disabled={isFilterActive ? effectiveIndexInFiltered >= effectiveTotal - 1 : currentIndex >= questions.length - 1}
           />
         </div>
 

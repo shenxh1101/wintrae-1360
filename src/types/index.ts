@@ -224,6 +224,29 @@ export interface QuestionResult {
   errorReasons?: string[];
 }
 
+export interface CorrectionResult {
+  questionId: string;
+  originalResult: QuestionResult;
+  retryResult: QuestionResult;
+  originalAnswer: AnswerData;
+  retryAnswer: AnswerData;
+  isCorrected: boolean;
+  scoreDelta: number;
+  correctAfterRetry: boolean;
+}
+
+export interface ReviewFilters {
+  questionTypes?: QuestionType[];
+  correctness?: 'all' | 'correct' | 'wrong';
+  markedOnly?: boolean;
+}
+
+export interface CorrectionExerciseResult extends ExerciseResult {
+  corrections: CorrectionResult[];
+  correctedCount: number;
+  remainingWrongCount: number;
+}
+
 export interface ExerciseCallbacks {
   onSubmit?: (question: Question, result: QuestionResult) => void;
   onAnswerChange?: (question: Question, answer: AnswerData) => void;
@@ -277,6 +300,10 @@ export interface ExerciseSetCallbacks extends ExerciseCallbacks {
   onQuestionChange?: (index: number, question: Question, progress: ExerciseProgress) => void;
   onExerciseSubmit?: (result: ExerciseResult) => void;
   onExerciseComplete?: (result: ExerciseResult) => void;
+  onCorrectionStart?: (wrongQuestions: Question[]) => void;
+  onCorrectionSubmit?: (result: CorrectionExerciseResult) => void;
+  onCorrectionComplete?: (result: CorrectionExerciseResult) => void;
+  onFilterChange?: (filters: ReviewFilters, filteredCount: number) => void;
 }
 
 export interface ExerciseState {

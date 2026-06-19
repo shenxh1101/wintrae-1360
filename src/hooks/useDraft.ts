@@ -45,7 +45,7 @@ function isLocalStorageAvailable(): boolean {
   }
 }
 
-function readDraft(
+function readDraftRaw(
   key: string,
   expectedType?: QuestionType
 ): { data: AnswerData | null; lastSaved: Date | null; valid: boolean } {
@@ -75,6 +75,15 @@ function readDraft(
   } catch {
     return { data: null, lastSaved: null, valid: false };
   }
+}
+
+export function readDraft(
+  questionId: string,
+  expectedType?: QuestionType
+): AnswerData | null {
+  if (!isLocalStorageAvailable()) return null;
+  const key = `${STORAGE_PREFIX}${questionId}`;
+  return readDraftRaw(key, expectedType).data;
 }
 
 function writeDraft(
@@ -119,24 +128,46 @@ export function useDraft(options: UseDraftOptions): UseDraftReturn {
 
   const key = getStorageKey(questionId, storageKey);
   const storageAvailable = useRef(isLocalStorageAvailable());
+  const lastQuestionIdRef = useRef<string>(questionId);
 
-  const [draft, setDraftState] = useState<AnswerData | null>(() => {
+  const initialDraft = (() => {
     if (initialValue !== null) return initialValue;
     if (storageAvailable.current) {
-      return readDraft(key, questionType).data;
+      return readDraftRaw(key, questionType).data;
     }
     return null;
-  });
+  })();
 
-  const [lastSaved, setLastSaved] = useState<Date | null>(() => {
-    if (storageAvailable.current) {
-      return readDraft(key, questionType).lastSaved;
-    }
-    return null;
-  });
+  const [draft, setDraftState] = useState<AnswerData | null>(initialDraft);
+
+  const initialLastSaved = storageAvailable.current
+    ? readDraftRaw(key, questionType).lastSaved
+    : null;
+
+  const [lastSaved, setLastSaved] = useState<Date | null>(initialLastSaved);
 
   const [isSaving, setIsSaving] = useState(false);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  if (questionId !== lastQuestionIdRef.current) {
+    lastQuestionIdRef.current = questionId;
+    const freshInitial: AnswerData | null = (() => {
+      if (initialValue !== null) return initialValue;
+      if (storageAvailable.current) {
+        return readDraftRaw(key, questionType).data;
+      }
+      return null;
+    })();
+    if (draft !== freshInitial) {
+      setDraftState(freshInitial);
+    }
+    const freshLastSaved = storageAvailable.current
+      ? readDraftRaw(key, questionType).lastSaved
+      : null;
+    if (lastSaved?.getTime() !== freshLastSaved?.getTime()) {
+      setLastSaved(freshLastSaved);
+    }
+  }
 
   const saveDraft = useCallback(() => {
     if (!storageAvailable.current) return;
@@ -189,13 +220,10 @@ export function useDraft(options: UseDraftOptions): UseDraftReturn {
 
   useEffect(() => {
     if (!storageAvailable.current) return;
-    const stored = readDraft(key, questionType);
+    const stored = readDraftRaw(key, questionType);
     if (stored.data !== null && initialValue === null) {
       setDraftState(stored.data);
       setLastSaved(stored.lastSaved);
-    } else if (stored.data === null && initialValue === null) {
-      setDraftState(null);
-      setLastSaved(null);
     }
   }, [questionId, key, questionType, initialValue]);
 

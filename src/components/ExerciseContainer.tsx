@@ -2,7 +2,7 @@ import React, { CSSProperties, useCallback, useEffect, useMemo, useRef, useState
 import { useTheme } from '../theme/ThemeProvider';
 import { useA11y } from '../hooks/useA11y';
 import { useTimer } from '../hooks/useTimer';
-import { useDraft, createAnswerDraft, clearDraftByQuestionId } from '../hooks/useDraft';
+import { useDraft, createAnswerDraft, clearDraftByQuestionId, readDraft } from '../hooks/useDraft';
 import { useExerciseKeyboard } from '../hooks/useKeyboard';
 import { createQuestionResult, evaluateQuestion, isAnswerComplete } from '../utils/scoring';
 import type {
@@ -19,6 +19,9 @@ import type {
   MatchingAnswer,
   SortingAnswer,
   ListeningAnswer,
+  CorrectionResult,
+  CorrectionExerciseResult,
+  ReviewFilters,
 } from '../types';
 
 import { QuestionHeader } from './common/QuestionHeader';
@@ -164,9 +167,16 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   const isSetMode = questionsProp !== undefined && questionsProp.length > 1;
   const shouldShowProgress = showProgress ?? isSetMode;
 
+  const [originalQuestions, setOriginalQuestions] = useState<Question[] | null>(null);
+  const [originalStatesMap, setOriginalStatesMap] = useState<Record<string, PerQuestionState> | null>(null);
+  const [correctionMode, setCorrectionMode] = useState(false);
+  const [correctionQuestions, setCorrectionQuestions] = useState<Question[] | null>(null);
+
+  const displayQuestions = correctionMode && correctionQuestions ? correctionQuestions : questions;
+
   const [internalIndex, setInternalIndex] = useState(initialIndex);
   const currentIndex = controlledIndex !== undefined ? controlledIndex : internalIndex;
-  const currentQuestion = questions[currentIndex];
+  const currentQuestion = displayQuestions[currentIndex];
 
   const [statesMap, setStatesMap] = useState<Record<string, PerQuestionState>>(() => {
     const map: Record<string, PerQuestionState> = {};
@@ -176,13 +186,8 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
 
       let draftAnswer: AnswerData | null = null;
       try {
-        const raw = localStorage.getItem(`edu-exercise-draft-${q.id}`);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed.questionType === undefined || parsed.questionType === q.type) {
-            draftAnswer = parsed.data;
-          }
-        }
+        const loaded = readDraft(q.id, q.type);
+        if (loaded) draftAnswer = loaded;
       } catch { /* ignore */ }
 
       const finalAnswer = initAnswer ?? draftAnswer;
@@ -193,7 +198,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmittingAll, setIsSubmittingAll] = useState(false);
-  const [startTime] = useState(() => new Date());
+  const [startTime, setStartTime] = useState(() => new Date());
   const [reviewMode, setReviewMode] = useState(false);
   const [reviewIndex, setReviewIndex] = useState(0);
   const hasStartedRef = useRef(false);
@@ -212,6 +217,8 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     },
   });
 
+  const currentState = currentQuestion ? statesMap[currentQuestion.id] : null;
+
   const {
     draft,
     setDraft,
@@ -222,14 +229,13 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   } = useDraft({
     questionId: currentQuestion?.id ?? '__empty__',
     questionType: currentQuestion?.type,
-    initialValue: null,
+    initialValue: currentState && !currentState.isSubmitted ? currentState.answer : null,
   });
-
-  const currentState = currentQuestion ? statesMap[currentQuestion.id] : null;
 
   const answer = useMemo<AnswerData | null>(() => {
     if (!currentState || !currentQuestion) return null;
-    if (draft !== null && !currentState.isSubmitted) return draft;
+    if (currentState.isSubmitted) return currentState.answer;
+    if (draft !== null) return draft;
     return currentState.answer;
   }, [currentQuestion, currentState, draft]);
 
@@ -269,7 +275,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     let totalScore = 0;
     let earnedScore = 0;
 
-    const items = questions.map((q, index) => {
+    const items = displayQuestions.map((q, index) => {
       const state = statesMap[q.id];
       if (!state) {
         totalScore += q.score ?? 1;
@@ -322,7 +328,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     });
 
     return {
-      total: questions.length,
+      total: displayQuestions.length,
       answeredCount,
       submittedCount,
       correctCount,
@@ -331,10 +337,10 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       earnedScore: Number(earnedScore.toFixed(2)),
       items,
     };
-  }, [questions, statesMap, scoringMode]);
+  }, [displayQuestions, statesMap, scoringMode]);
 
   const jumpTo = useCallback((index: number) => {
-    if (!questions[index] || index === currentIndex) return;
+    if (!displayQuestions[index] || index === currentIndex) return;
 
     accumulateCurrentTime();
     timer.pause();
@@ -343,51 +349,95 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       setInternalIndex(index);
     }
 
-    const nextQuestion = questions[index];
+    const nextQuestion = displayQuestions[index];
     callbacks.onQuestionChange?.(index, nextQuestion, progress);
     announceInfo(`切换到第 ${index + 1} 题`);
-  }, [questions, currentIndex, controlledIndex, progress, callbacks, announceInfo, accumulateCurrentTime, timer]);
+  }, [displayQuestions, currentIndex, controlledIndex, progress, callbacks, announceInfo, accumulateCurrentTime, timer]);
 
   const handleNext = useCallback(() => {
     const nextIndex = currentIndex + 1;
-    if (nextIndex >= questions.length) {
+    if (nextIndex >= displayQuestions.length) {
       announceInfo('已是最后一题');
-      const current = questions[currentIndex];
+      const current = displayQuestions[currentIndex];
       callbacks.onNext?.(current, undefined);
       return;
     }
-    const current = questions[currentIndex];
-    const next = questions[nextIndex];
+    const current = displayQuestions[currentIndex];
+    const next = displayQuestions[nextIndex];
     callbacks.onNext?.(current, next);
     jumpTo(nextIndex);
-  }, [currentIndex, questions, jumpTo, callbacks, announceInfo]);
+  }, [currentIndex, displayQuestions, jumpTo, callbacks, announceInfo]);
 
   const handlePrev = useCallback(() => {
     const prevIndex = currentIndex - 1;
     if (prevIndex < 0) {
       announceInfo('已是第一题');
-      const current = questions[currentIndex];
+      const current = displayQuestions[currentIndex];
       callbacks.onPrev?.(current, undefined);
       return;
     }
-    const current = questions[currentIndex];
-    const prev = questions[prevIndex];
+    const current = displayQuestions[currentIndex];
+    const prev = displayQuestions[prevIndex];
     callbacks.onPrev?.(current, prev);
     jumpTo(prevIndex);
-  }, [currentIndex, questions, jumpTo, callbacks, announceInfo]);
+  }, [currentIndex, displayQuestions, jumpTo, callbacks, announceInfo]);
+
+  const buildCorrectionResult = useCallback((
+    retryQuestions: Question[],
+    retryStates: Record<string, PerQuestionState>,
+    _origQuestions: Question[],
+    origStates: Record<string, PerQuestionState>,
+    st: Date
+  ): CorrectionExerciseResult => {
+    const baseResult = buildExerciseResult(retryQuestions, retryStates, st);
+
+    const corrections: CorrectionResult[] = retryQuestions
+      .map(q => {
+        const origState = origStates[q.id];
+        const retryState = retryStates[q.id];
+        if (!origState?.result || !retryState?.result) return null;
+        return {
+          questionId: q.id,
+          originalResult: origState.result,
+          retryResult: retryState.result,
+          originalAnswer: origState.answer,
+          retryAnswer: retryState.answer,
+          isCorrected: !origState.result.isCorrect && retryState.result.isCorrect,
+          scoreDelta: retryState.result.score.earned - origState.result.score.earned,
+          correctAfterRetry: retryState.result.isCorrect,
+        } as CorrectionResult;
+      })
+      .filter((r): r is CorrectionResult => r !== null);
+
+    const correctedCount = corrections.filter(c => c.isCorrected).length;
+    const remainingWrongCount = corrections.filter(c => !c.correctAfterRetry).length;
+
+    return {
+      ...baseResult,
+      corrections,
+      correctedCount,
+      remainingWrongCount,
+    };
+  }, []);
 
   const fireCompleteIfNeeded = useCallback((newStates: Record<string, PerQuestionState>) => {
-    const allDone = questions.every(q => newStates[q.id]?.isSubmitted);
+    const allDone = displayQuestions.every(q => newStates[q.id]?.isSubmitted);
     if (!allDone) return;
 
-    const exerciseResult = buildExerciseResult(questions, newStates, startTime);
-    callbacks.onExerciseComplete?.(exerciseResult);
+    if (correctionMode && originalQuestions && originalStatesMap && correctionQuestions) {
+      const correctionResult = buildCorrectionResult(correctionQuestions, newStates, originalQuestions, originalStatesMap, startTime);
+      callbacks.onCorrectionSubmit?.(correctionResult);
+      callbacks.onCorrectionComplete?.(correctionResult);
+    } else {
+      const exerciseResult = buildExerciseResult(displayQuestions, newStates, startTime);
+      callbacks.onExerciseComplete?.(exerciseResult);
+    }
 
     if (isSetMode) {
       setReviewMode(true);
       setReviewIndex(0);
     }
-  }, [questions, startTime, callbacks, isSetMode]);
+  }, [displayQuestions, startTime, callbacks, isSetMode, correctionMode, originalQuestions, originalStatesMap, correctionQuestions, buildCorrectionResult]);
 
   const submitCurrent = useCallback((fromTimeout = false) => {
     if (!currentQuestion || !currentState || currentState.isSubmitted || isSubmitting) return;
@@ -476,7 +526,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       }
     }
 
-    questions.forEach(q => {
+    displayQuestions.forEach(q => {
       const state = updatedStates[q.id];
       if (!state) return;
       if (state.isSubmitted) return;
@@ -495,7 +545,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     setTimeout(() => {
       const newStatesMap = { ...updatedStates };
 
-      questions.forEach(q => {
+      displayQuestions.forEach(q => {
         const state = newStatesMap[q.id];
         if (!state || state.isSubmitted) return;
 
@@ -519,17 +569,26 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
 
       setStatesMap(newStatesMap);
 
-      const exerciseResult = buildExerciseResult(questions, newStatesMap, startTime);
+      let resultToAnnounce: ExerciseResult | CorrectionExerciseResult;
+
+      if (correctionMode && originalQuestions && originalStatesMap && correctionQuestions) {
+        const correctionResult = buildCorrectionResult(correctionQuestions, newStatesMap, originalQuestions, originalStatesMap, startTime);
+        resultToAnnounce = correctionResult;
+        callbacks.onCorrectionSubmit?.(correctionResult);
+        callbacks.onCorrectionComplete?.(correctionResult);
+      } else {
+        const exerciseResult = buildExerciseResult(displayQuestions, newStatesMap, startTime);
+        resultToAnnounce = exerciseResult;
+        callbacks.onExerciseSubmit?.(exerciseResult);
+        callbacks.onExerciseComplete?.(exerciseResult);
+      }
 
       if (currentQuestion && !statesMap[currentQuestion.id]?.isSubmitted) {
         clearDraft();
       }
 
       setIsSubmittingAll(false);
-      announceInfo(`整组提交完成，共 ${exerciseResult.totalCount} 题，正确 ${exerciseResult.correctCount} 题`);
-
-      callbacks.onExerciseSubmit?.(exerciseResult);
-      callbacks.onExerciseComplete?.(exerciseResult);
+      announceInfo(`整组提交完成，共 ${resultToAnnounce.totalCount} 题，正确 ${resultToAnnounce.correctCount} 题`);
 
       if (isSetMode) {
         setReviewMode(true);
@@ -537,7 +596,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       }
     }, 500);
   }, [
-    questions,
+    displayQuestions,
     statesMap,
     currentQuestion,
     timer,
@@ -550,7 +609,51 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     announceInfo,
     announceError,
     isSetMode,
+    correctionMode,
+    originalQuestions,
+    originalStatesMap,
+    correctionQuestions,
+    buildCorrectionResult,
   ]);
+
+  const handleStartCorrection = useCallback(() => {
+    const wrongList: Question[] = [];
+    displayQuestions.forEach(q => {
+      const s = statesMap[q.id];
+      if (s?.result && !s.result.isCorrect) {
+        wrongList.push(q);
+      }
+    });
+    if (wrongList.length === 0) {
+      announceInfo('没有错题，无需重练');
+      return;
+    }
+
+    callbacks.onCorrectionStart?.(wrongList);
+
+    setOriginalQuestions(displayQuestions);
+    setOriginalStatesMap({ ...statesMap });
+    setCorrectionMode(true);
+    setCorrectionQuestions(wrongList);
+    setReviewMode(false);
+    setStartTime(new Date());
+
+    const newMap: Record<string, PerQuestionState> = {};
+    wrongList.forEach(q => {
+      let draftAnswer: AnswerData | null = null;
+      try {
+        const loaded = readDraft(q.id, q.type);
+        if (loaded) draftAnswer = loaded;
+      } catch { /* ignore */ }
+      newMap[q.id] = initQuestionState(q, draftAnswer ?? undefined, null, statesMap[q.id]?.isMarked ?? false, statesMap[q.id]?.isCollected ?? false);
+    });
+
+    setStatesMap(newMap);
+
+    if (controlledIndex === undefined) {
+      setInternalIndex(0);
+    }
+  }, [displayQuestions, statesMap, callbacks, announceInfo, controlledIndex]);
 
   const handleRedo = useCallback(() => {
     if (!currentQuestion || !currentState) return;
@@ -599,16 +702,16 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   }, [currentQuestion, currentState?.isSubmitted, updateState, setDraft, callbacks]);
 
   const handleReviewJump = useCallback((index: number) => {
-    if (index < 0 || index >= questions.length) return;
+    if (index < 0 || index >= displayQuestions.length) return;
     setReviewIndex(index);
-  }, [questions.length]);
+  }, [displayQuestions.length]);
 
   const handleReviewRedo = useCallback((index: number) => {
     setReviewMode(false);
     if (controlledIndex === undefined) {
       setInternalIndex(index);
     }
-    const q = questions[index];
+    const q = displayQuestions[index];
     if (!q) return;
 
     const freshAnswer = createAnswerDraft(q);
@@ -626,7 +729,11 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
         timer.start();
       }
     }, 50);
-  }, [questions, controlledIndex, updateState, setDraft, timer, autoStartTimer]);
+  }, [displayQuestions, controlledIndex, updateState, setDraft, timer, autoStartTimer]);
+
+  const handleFilterChange = useCallback((filters: ReviewFilters, count: number) => {
+    callbacks.onFilterChange?.(filters, count);
+  }, [callbacks]);
 
   useExerciseKeyboard({
     onSubmit: () => {
@@ -658,11 +765,11 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   });
 
   useEffect(() => {
-    if (!hasStartedRef.current && questions.length > 0) {
+    if (!hasStartedRef.current && displayQuestions.length > 0) {
       hasStartedRef.current = true;
-      callbacks.onExerciseStart?.(questions);
+      callbacks.onExerciseStart?.(displayQuestions);
     }
-  }, [questions, callbacks]);
+  }, [displayQuestions, callbacks]);
 
   useEffect(() => {
     if (!currentQuestion || reviewMode) return;
@@ -675,8 +782,8 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   }, [currentQuestion, answer]);
 
   const allSubmitted = useMemo(() => {
-    return questions.every(q => statesMap[q.id]?.isSubmitted);
-  }, [questions, statesMap]);
+    return displayQuestions.every(q => statesMap[q.id]?.isSubmitted);
+  }, [displayQuestions, statesMap]);
 
   const renderQuestionComponent = () => {
     if (!currentQuestion || !answer) return null;
@@ -736,7 +843,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     }
   };
 
-  if (questions.length === 0 || !currentQuestion) {
+  if (displayQuestions.length === 0 || !currentQuestion) {
     return (
       <div className={className} style={{ padding: theme.spacing.xl, textAlign: 'center', color: theme.colors.textSecondary }}>
         暂无题目
@@ -852,6 +959,10 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     />
   );
 
+  const displayStatesMap = correctionMode && originalStatesMap
+    ? { ...originalStatesMap, ...statesMap }
+    : statesMap;
+
   return (
     <div className={className} style={containerStyle}>
       {shouldShowProgress && progressPosition === 'left' && (
@@ -865,18 +976,34 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       <div style={mainContentStyle}>
         {reviewMode && isSetMode ? (
           <ReviewPanel
-            questions={questions}
-            statesMap={statesMap}
+            questions={displayQuestions}
+            statesMap={displayStatesMap}
             currentIndex={reviewIndex}
             onJump={handleReviewJump}
             onRedo={handleReviewRedo}
             onExitReview={() => setReviewMode(false)}
+            onStartCorrection={correctionMode ? undefined : handleStartCorrection}
+            onFilterChange={handleFilterChange}
             scoringMode={scoringMode}
           />
         ) : (
           <>
             <div style={headerStyle}>
               <div style={headerLeftStyle}>
+                {correctionMode && (
+                  <span style={{
+                    display: 'inline-block',
+                    padding: `2px ${theme.spacing.sm}`,
+                    backgroundColor: `${theme.colors.warning}20`,
+                    color: theme.colors.warning,
+                    borderRadius: theme.borderRadius.full,
+                    fontSize: theme.fontSize.xs,
+                    fontWeight: theme.fontWeights.semibold,
+                    marginRight: theme.spacing.sm,
+                  }}>
+                    ✎ 错题重练
+                  </span>
+                )}
                 {showTimer && (
                   <TimerDisplay
                     time={timer.time}
@@ -924,7 +1051,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
               <QuestionHeader
                 question={currentQuestion}
                 index={currentIndex}
-                total={questions.length}
+                total={displayQuestions.length}
               />
 
               {renderQuestionComponent()}
@@ -1002,14 +1129,14 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
                   >
                     提交本题
                   </Button>
-                ) : (
-                  showNavButtons && (
-                    <NavButton
-                      direction="next"
-                      onClick={handleNext}
-                      disabled={currentIndex >= questions.length - 1}
-                    />
-                  )
+                ) : null}
+
+                {showNavButtons && (
+                  <NavButton
+                    direction="next"
+                    onClick={handleNext}
+                    disabled={currentIndex >= displayQuestions.length - 1}
+                  />
                 )}
 
                 {isSetMode && showSubmitAll && !allSubmitted && (

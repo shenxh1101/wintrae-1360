@@ -31,6 +31,9 @@ export type {
   QuestionProgressItem,
   ExerciseProgress,
   ExerciseResult,
+  CorrectionResult,
+  CorrectionExerciseResult,
+  ReviewFilters,
 } from './types';
 
 export {
