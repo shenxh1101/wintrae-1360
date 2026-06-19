@@ -1,0 +1,172 @@
+@keyframes edu-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes edu-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes edu-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes edu-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes edu-bounce-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+  70% {
+    transform: scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes edu-shake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  20%, 60% {
+    transform: translateX(-4px);
+  }
+  40%, 80% {
+    transform: translateX(4px);
+  }
+}
+
+@keyframes edu-success-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(22, 163, 74, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(22, 163, 74, 0.1);
+  }
+}
+
+@keyframes edu-error-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(220, 38, 38, 0.1);
+  }
+}
+
+.edu-fade-in {
+  animation: edu-fade-in 0.3s ease-out;
+}
+
+.edu-slide-in {
+  animation: edu-slide-in 0.3s ease-out;
+}
+
+.edu-bounce-in {
+  animation: edu-bounce-in 0.5s ease-out;
+}
+
+.edu-shake {
+  animation: edu-shake 0.5s ease-in-out;
+}
+
+.edu-success-glow {
+  animation: edu-success-glow 1.5s ease-in-out;
+}
+
+.edu-error-glow {
+  animation: edu-error-glow 1.5s ease-in-out;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.edu-touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+@media (max-width: 640px) {
+  .edu-mobile-padding {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .edu-mobile-stack {
+    flex-direction: column;
+  }
+
+  .edu-mobile-full-width {
+    width: 100%;
+  }
+}
+
+.edu-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+button:focus-visible,
+input:focus-visible,
+[role="button"]:focus-visible,
+[role="option"]:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--edu-color-primary, #2563eb);
+  outline-offset: 2px;
+}
+
+input::placeholder {
+  color: var(--edu-color-text-secondary, #64748b);
+}
+
+input:disabled,
+button:disabled {
+  cursor: not-allowed;
+}
+
+[data-edu-draggable="true"] {
+  cursor: grab;
+}
+
+[data-edu-draggable="true"]:active {
+  cursor: grabbing;
+}
