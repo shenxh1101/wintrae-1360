@@ -247,17 +247,26 @@ export function evaluateListening(
   const innerQuestion = question.questions;
   const innerAnswer = answer.inner;
 
-  let score: ScoreDetail;
+  let innerScore: ScoreDetail;
 
   if (innerQuestion.type === 'multiple-choice') {
-    score = evaluateMultipleChoice(innerQuestion, innerAnswer as MultipleChoiceAnswer, scoringMode);
+    innerScore = evaluateMultipleChoice(innerQuestion, innerAnswer as MultipleChoiceAnswer, scoringMode);
   } else {
-    score = evaluateFillBlank(innerQuestion, innerAnswer as FillBlankAnswer, scoringMode);
+    innerScore = evaluateFillBlank(innerQuestion, innerAnswer as FillBlankAnswer, scoringMode);
   }
 
+  const outerTotal = question.score;
+  if (outerTotal === undefined || outerTotal === innerScore.total || innerScore.total === 0) {
+    return innerScore;
+  }
+
+  const ratio = outerTotal / innerScore.total;
+  const scaledEarned = Number((innerScore.earned * ratio).toFixed(2));
+
   return {
-    ...score,
-    total: question.score ?? score.total,
+    ...innerScore,
+    total: outerTotal,
+    earned: scaledEarned,
   };
 }
 

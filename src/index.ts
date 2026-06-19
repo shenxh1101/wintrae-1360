@@ -25,7 +25,12 @@ export type {
   ScoreDetail,
   QuestionResult,
   ExerciseCallbacks,
+  ExerciseSetCallbacks,
   ExerciseState,
+  QuestionProgressStatus,
+  QuestionProgressItem,
+  ExerciseProgress,
+  ExerciseResult,
 } from './types';
 
 export {
@@ -97,6 +102,9 @@ export type { ListeningProps } from './components/questions/Listening';
 
 export { AnalysisPanel } from './components/AnalysisPanel';
 export type { AnalysisPanelProps } from './components/AnalysisPanel';
+
+export { ProgressPanel } from './components/ProgressPanel';
+export type { ProgressPanelProps } from './components/ProgressPanel';
 
 export { ExerciseContainer } from './components/ExerciseContainer';
 export type { ExerciseContainerProps } from './components/ExerciseContainer';

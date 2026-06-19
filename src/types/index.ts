@@ -236,6 +236,48 @@ export interface ExerciseCallbacks {
   onTimeout?: (question: Question) => void;
 }
 
+export type QuestionProgressStatus = 'unanswered' | 'answered' | 'submitted' | 'wrong';
+
+export interface QuestionProgressItem {
+  index: number;
+  questionId: string;
+  status: QuestionProgressStatus;
+  isMarked?: boolean;
+  isCollected?: boolean;
+  score?: number;
+}
+
+export interface ExerciseProgress {
+  total: number;
+  answeredCount: number;
+  submittedCount: number;
+  correctCount: number;
+  wrongCount: number;
+  totalScore: number;
+  earnedScore: number;
+  items: QuestionProgressItem[];
+}
+
+export interface ExerciseResult {
+  questions: Question[];
+  results: QuestionResult[];
+  totalScore: number;
+  earnedScore: number;
+  correctCount: number;
+  totalCount: number;
+  accuracy: number;
+  totalTimeSpent: number;
+  startTime?: Date;
+  endTime?: Date;
+}
+
+export interface ExerciseSetCallbacks extends ExerciseCallbacks {
+  onExerciseStart?: (questions: Question[]) => void;
+  onQuestionChange?: (index: number, question: Question, progress: ExerciseProgress) => void;
+  onExerciseSubmit?: (result: ExerciseResult) => void;
+  onExerciseComplete?: (result: ExerciseResult) => void;
+}
+
 export interface ExerciseState {
   currentQuestion: Question;
   answer: AnswerData | null;
