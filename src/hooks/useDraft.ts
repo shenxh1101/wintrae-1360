@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { AnswerData, Question } from '../types';
+import type { AnswerData, Question, QuestionType } from '../types';
 
 export interface UseDraftOptions {
   questionId: string;
+  questionType?: QuestionType;
   initialValue?: AnswerData | null;
   storageKey?: string;
   debounceMs?: number;
@@ -22,6 +23,13 @@ export interface UseDraftReturn {
 const STORAGE_PREFIX = 'edu-exercise-draft-';
 const DEFAULT_DEBOUNCE = 300;
 
+interface DraftPayload {
+  data: AnswerData;
+  questionType?: QuestionType;
+  timestamp: string;
+  version: number;
+}
+
 function getStorageKey(questionId: string, customKey?: string): string {
   return customKey || `${STORAGE_PREFIX}${questionId}`;
 }
@@ -37,36 +45,54 @@ function isLocalStorageAvailable(): boolean {
   }
 }
 
-function readDraft(key: string): { data: AnswerData | null; lastSaved: Date | null } {
+function readDraft(
+  key: string,
+  expectedType?: QuestionType
+): { data: AnswerData | null; lastSaved: Date | null; valid: boolean } {
   if (!isLocalStorageAvailable()) {
-    return { data: null, lastSaved: null };
+    return { data: null, lastSaved: null, valid: false };
   }
 
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return { data: null, lastSaved: null };
+    if (!raw) return { data: null, lastSaved: null, valid: false };
 
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw) as DraftPayload;
+
+    if (expectedType && parsed.questionType && parsed.questionType !== expectedType) {
+      console.warn(
+        `[useDraft] 题型不匹配，丢弃草稿。期望 ${expectedType}，实际 ${parsed.questionType}`
+      );
+      localStorage.removeItem(key);
+      return { data: null, lastSaved: null, valid: false };
+    }
+
     return {
-      data: parsed.data as AnswerData,
+      data: parsed.data,
       lastSaved: parsed.timestamp ? new Date(parsed.timestamp) : null,
+      valid: true,
     };
   } catch {
-    return { data: null, lastSaved: null };
+    return { data: null, lastSaved: null, valid: false };
   }
 }
 
-function writeDraft(key: string, data: AnswerData | null): void {
+function writeDraft(
+  key: string,
+  data: AnswerData | null,
+  questionType?: QuestionType
+): void {
   if (!isLocalStorageAvailable()) return;
 
   try {
     if (data === null) {
       localStorage.removeItem(key);
     } else {
-      const payload = {
+      const payload: DraftPayload = {
         data,
+        questionType,
         timestamp: new Date().toISOString(),
-        version: 1,
+        version: 2,
       };
       localStorage.setItem(key, JSON.stringify(payload));
     }
@@ -84,6 +110,7 @@ export function clearDraftByQuestionId(questionId: string): void {
 export function useDraft(options: UseDraftOptions): UseDraftReturn {
   const {
     questionId,
+    questionType,
     initialValue = null,
     storageKey,
     debounceMs = DEFAULT_DEBOUNCE,
@@ -96,14 +123,14 @@ export function useDraft(options: UseDraftOptions): UseDraftReturn {
   const [draft, setDraftState] = useState<AnswerData | null>(() => {
     if (initialValue !== null) return initialValue;
     if (storageAvailable.current) {
-      return readDraft(key).data;
+      return readDraft(key, questionType).data;
     }
     return null;
   });
 
   const [lastSaved, setLastSaved] = useState<Date | null>(() => {
     if (storageAvailable.current) {
-      return readDraft(key).lastSaved;
+      return readDraft(key, questionType).lastSaved;
     }
     return null;
   });
@@ -115,12 +142,12 @@ export function useDraft(options: UseDraftOptions): UseDraftReturn {
     if (!storageAvailable.current) return;
     setIsSaving(true);
     try {
-      writeDraft(key, draft);
+      writeDraft(key, draft, questionType);
       setLastSaved(new Date());
     } finally {
       setTimeout(() => setIsSaving(false), 100);
     }
-  }, [key, draft]);
+  }, [key, draft, questionType]);
 
   const setDraft = useCallback((data: AnswerData | null) => {
     setDraftState(data);
@@ -147,7 +174,7 @@ export function useDraft(options: UseDraftOptions): UseDraftReturn {
 
     debounceTimerRef.current = setTimeout(() => {
       setIsSaving(true);
-      writeDraft(key, draft);
+      writeDraft(key, draft, questionType);
       setLastSaved(new Date());
       setTimeout(() => setIsSaving(false), 100);
       debounceTimerRef.current = null;
@@ -158,16 +185,19 @@ export function useDraft(options: UseDraftOptions): UseDraftReturn {
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [draft, key, debounceMs, autoSave]);
+  }, [draft, key, debounceMs, autoSave, questionType]);
 
   useEffect(() => {
     if (!storageAvailable.current) return;
-    const stored = readDraft(key);
+    const stored = readDraft(key, questionType);
     if (stored.data !== null && initialValue === null) {
       setDraftState(stored.data);
       setLastSaved(stored.lastSaved);
+    } else if (stored.data === null && initialValue === null) {
+      setDraftState(null);
+      setLastSaved(null);
     }
-  }, [questionId, key, initialValue]);
+  }, [questionId, key, questionType, initialValue]);
 
   const hasDraft = draft !== null;
 

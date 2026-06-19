@@ -70,6 +70,7 @@ interface PerQuestionState {
   isSubmitted: boolean;
   isMarked: boolean;
   isCollected: boolean;
+  elapsedTime: number;
 }
 
 function initQuestionState(
@@ -85,6 +86,7 @@ function initQuestionState(
     isSubmitted: !!initialResult,
     isMarked: initialIsMarked,
     isCollected: initialIsCollected,
+    elapsedTime: initialResult?.timeSpent ?? 0,
   };
 }
 
@@ -171,7 +173,20 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     questions.forEach(q => {
       const initAnswer = initialAnswers?.[q.id] ?? (q.id === singleQuestion?.id ? initialAnswer : null);
       const initResult = initialResults?.[q.id] ?? null;
-      map[q.id] = initQuestionState(q, initAnswer, initResult, initialIsMarked, initialIsCollected);
+
+      let draftAnswer: AnswerData | null = null;
+      try {
+        const raw = localStorage.getItem(`edu-exercise-draft-${q.id}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed.questionType === undefined || parsed.questionType === q.type) {
+            draftAnswer = parsed.data;
+          }
+        }
+      } catch { /* ignore */ }
+
+      const finalAnswer = initAnswer ?? draftAnswer;
+      map[q.id] = initQuestionState(q, finalAnswer, initResult, initialIsMarked, initialIsCollected);
     });
     return map;
   });
@@ -184,7 +199,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   const hasStartedRef = useRef(false);
 
   const timer = useTimer({
-    autoStart: autoStartTimer,
+    autoStart: false,
     timeLimit: currentQuestion?.timeLimit,
     onTimeout: () => {
       if (!currentQuestion) return;
@@ -206,16 +221,17 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     isSaving,
   } = useDraft({
     questionId: currentQuestion?.id ?? '__empty__',
+    questionType: currentQuestion?.type,
     initialValue: null,
   });
 
   const currentState = currentQuestion ? statesMap[currentQuestion.id] : null;
 
   const answer = useMemo<AnswerData | null>(() => {
-    if (!currentState) return null;
+    if (!currentState || !currentQuestion) return null;
     if (draft !== null && !currentState.isSubmitted) return draft;
     return currentState.answer;
-  }, [currentState, draft]);
+  }, [currentQuestion, currentState, draft]);
 
   const updateState = useCallback((questionId: string, patch: Partial<PerQuestionState>) => {
     setStatesMap(prev => ({
@@ -224,12 +240,26 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     }));
   }, []);
 
-  const syncCurrentToState = useCallback(() => {
-    if (!currentQuestion || !currentState || currentState.isSubmitted) return;
-    if (draft !== null) {
-      updateState(currentQuestion.id, { answer: draft });
+  const accumulateCurrentTime = useCallback(() => {
+    if (!currentQuestion) return;
+    const state = statesMap[currentQuestion.id];
+    if (!state || state.isSubmitted) return;
+    if (timer.time > state.elapsedTime) {
+      updateState(currentQuestion.id, { elapsedTime: timer.time });
     }
-  }, [currentQuestion, currentState, draft, updateState]);
+  }, [currentQuestion, statesMap, timer.time, updateState]);
+
+  const startTimerForCurrent = useCallback(() => {
+    if (!currentQuestion || !currentState) return;
+    if (currentState.isSubmitted) {
+      timer.pause();
+      return;
+    }
+    timer.reset(currentState.elapsedTime);
+    if (autoStartTimer) {
+      timer.start();
+    }
+  }, [currentQuestion?.id, currentState?.isSubmitted, currentState?.elapsedTime, timer, autoStartTimer]);
 
   const progress = useMemo<ExerciseProgress>(() => {
     let answeredCount = 0;
@@ -253,7 +283,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
         };
       }
 
-      const effectiveAnswer = state.isSubmitted ? state.answer : (state.answer ?? createAnswerDraft(q));
+      const effectiveAnswer = state.answer ?? createAnswerDraft(q);
       const isAnswered = isAnswerComplete(q, effectiveAnswer);
 
       if (state.isSubmitted) {
@@ -285,7 +315,9 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
         status,
         isMarked: state.isMarked,
         isCollected: state.isCollected,
-        score: state.isSubmitted ? (state.result?.score.earned ?? 0) : (isAnswered ? evaluateQuestion(q, effectiveAnswer, scoringMode).earned : 0),
+        score: state.isSubmitted
+          ? (state.result?.score.earned ?? 0)
+          : (isAnswered ? evaluateQuestion(q, effectiveAnswer, scoringMode).earned : 0),
       };
     });
 
@@ -304,7 +336,8 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   const jumpTo = useCallback((index: number) => {
     if (!questions[index] || index === currentIndex) return;
 
-    syncCurrentToState();
+    accumulateCurrentTime();
+    timer.pause();
 
     if (controlledIndex === undefined) {
       setInternalIndex(index);
@@ -313,7 +346,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     const nextQuestion = questions[index];
     callbacks.onQuestionChange?.(index, nextQuestion, progress);
     announceInfo(`切换到第 ${index + 1} 题`);
-  }, [questions, currentIndex, controlledIndex, progress, callbacks, announceInfo, syncCurrentToState]);
+  }, [questions, currentIndex, controlledIndex, progress, callbacks, announceInfo, accumulateCurrentTime, timer]);
 
   const handleNext = useCallback(() => {
     const nextIndex = currentIndex + 1;
@@ -359,7 +392,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   const submitCurrent = useCallback((fromTimeout = false) => {
     if (!currentQuestion || !currentState || currentState.isSubmitted || isSubmitting) return;
 
-    const currentAnswer = answer ?? createAnswerDraft(currentQuestion);
+    const currentAnswer = currentState.answer;
 
     if (!canSubmitIncomplete && !fromTimeout && !isAnswerComplete(currentQuestion, currentAnswer)) {
       announceError('请先完成作答后再提交');
@@ -368,11 +401,14 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
 
     setIsSubmitting(true);
     timer.pause();
+    accumulateCurrentTime();
+
+    const currentElapsed = Math.max(timer.time, currentState.elapsedTime);
 
     const questionResult = createQuestionResult(
       currentQuestion,
       currentAnswer,
-      timer.time,
+      currentElapsed,
       currentState.isMarked,
       currentState.isCollected,
       scoringMode
@@ -383,6 +419,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
         answer: currentAnswer,
         result: questionResult,
         isSubmitted: true,
+        elapsedTime: currentElapsed,
       };
 
       setStatesMap(prev => {
@@ -411,7 +448,6 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
   }, [
     currentQuestion,
     currentState,
-    answer,
     isSubmitting,
     canSubmitIncomplete,
     timer,
@@ -421,17 +457,27 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     announceSuccess,
     announceError,
     fireCompleteIfNeeded,
+    accumulateCurrentTime,
   ]);
 
   const submitAll = useCallback(() => {
     if (isSubmittingAll) return;
 
-    syncCurrentToState();
+    timer.pause();
 
     const unanswered: Question[] = [];
+    const updatedStates: Record<string, PerQuestionState> = { ...statesMap };
+
+    if (currentQuestion) {
+      const curState = updatedStates[currentQuestion.id];
+      if (curState && !curState.isSubmitted) {
+        const currentElapsed = Math.max(timer.time, curState.elapsedTime);
+        updatedStates[currentQuestion.id] = { ...curState, elapsedTime: currentElapsed };
+      }
+    }
 
     questions.forEach(q => {
-      const state = statesMap[q.id];
+      const state = updatedStates[q.id];
       if (!state) return;
       if (state.isSubmitted) return;
       if (!canSubmitAllIncomplete && !isAnswerComplete(q, state.answer)) {
@@ -447,7 +493,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     setIsSubmittingAll(true);
 
     setTimeout(() => {
-      const newStatesMap = { ...statesMap };
+      const newStatesMap = { ...updatedStates };
 
       questions.forEach(q => {
         const state = newStatesMap[q.id];
@@ -456,7 +502,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
         const result = createQuestionResult(
           q,
           state.answer,
-          0,
+          state.elapsedTime,
           state.isMarked,
           state.isCollected,
           scoringMode
@@ -494,6 +540,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     questions,
     statesMap,
     currentQuestion,
+    timer,
     isSubmittingAll,
     canSubmitAllIncomplete,
     scoringMode,
@@ -502,7 +549,6 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
     callbacks,
     announceInfo,
     announceError,
-    syncCurrentToState,
     isSetMode,
   ]);
 
@@ -519,10 +565,11 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       answer: freshAnswer,
       result: null,
       isSubmitted: false,
+      elapsedTime: 0,
     });
     setDraft(freshAnswer);
     setReviewMode(false);
-    timer.reset();
+    timer.reset(0);
     if (autoStartTimer) {
       timer.start();
     }
@@ -546,9 +593,10 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
 
   const handleAnswerChange = useCallback((newAnswer: AnswerData) => {
     if (!currentQuestion || currentState?.isSubmitted) return;
+    updateState(currentQuestion.id, { answer: newAnswer });
     setDraft(newAnswer);
     callbacks.onAnswerChange?.(currentQuestion, newAnswer);
-  }, [currentQuestion, currentState?.isSubmitted, setDraft, callbacks]);
+  }, [currentQuestion, currentState?.isSubmitted, updateState, setDraft, callbacks]);
 
   const handleReviewJump = useCallback((index: number) => {
     if (index < 0 || index >= questions.length) return;
@@ -568,11 +616,12 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
       answer: freshAnswer,
       result: null,
       isSubmitted: false,
+      elapsedTime: 0,
     });
 
     setTimeout(() => {
       setDraft(freshAnswer);
-      timer.reset();
+      timer.reset(0);
       if (autoStartTimer) {
         timer.start();
       }
@@ -617,10 +666,7 @@ export const ExerciseContainer: React.FC<ExerciseContainerProps> = ({
 
   useEffect(() => {
     if (!currentQuestion || reviewMode) return;
-    timer.reset();
-    if (autoStartTimer && !currentState?.isSubmitted) {
-      timer.start();
-    }
+    startTimerForCurrent();
   }, [currentIndex, reviewMode]);
 
   const answerComplete = useMemo(() => {
